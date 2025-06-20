@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import json
 import os
 import io
@@ -29,6 +29,9 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 # === Setup ===
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True
+intents.members = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 TASKS_FILE = "tasks.json"
@@ -50,7 +53,40 @@ def create_embed(task):
 async def on_ready():
     print(f"🤖 Logged in as {bot.user}")
 
-# === Create Task Command ===
+    # Start the alive message task loop if not running
+    if not send_alive_message.is_running():
+        send_alive_message.start()
+
+# === Background task to send "I'm alive" every 10 minutes ===
+@tasks.loop(minutes=10)
+async def send_alive_message():
+    # Define the guild and channel names
+    GUILD_ID = 1382363476948680754  # Replace with your server ID (int)
+    CHANNEL_NAME = "bot-status"     # Channel name you want the bot to send messages in
+
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        print("Guild not found. Check GUILD_ID.")
+        return
+
+    # Try to get the channel
+    channel = discord.utils.get(guild.text_channels, name=CHANNEL_NAME)
+    if channel is None:
+        # Create channel if it doesn't exist
+        try:
+            channel = await guild.create_text_channel(CHANNEL_NAME)
+            print(f"Created channel #{CHANNEL_NAME}")
+        except Exception as e:
+            print(f"Failed to create channel: {e}")
+            return
+
+    try:
+        await channel.send("🤖 I'm alive and running 24/7! 🌟")
+    except Exception as e:
+        print(f"Failed to send alive message: {e}")
+
+# --- Your existing commands here ---
+
 @bot.command()
 async def taskcreate(ctx, *, args=None):
     if not args or "--desc" not in args:
@@ -67,7 +103,6 @@ async def taskcreate(ctx, *, args=None):
     save_tasks()
     await ctx.send("📌 Task created:", embed=create_embed(task))
 
-# === List Tasks ===
 @bot.command()
 async def tasklist(ctx):
     if not tasks:
@@ -75,7 +110,6 @@ async def tasklist(ctx):
     for task in tasks:
         await ctx.send(embed=create_embed(task))
 
-# === Mark Task Done ===
 @bot.command()
 async def taskdone(ctx, task_id: int):
     for task in tasks:
@@ -88,7 +122,6 @@ async def taskdone(ctx, task_id: int):
             return
     await ctx.send("❌ Task not found.")
 
-# === Delete Task ===
 @bot.command()
 async def taskdelete(ctx, task_id: int):
     global tasks
@@ -101,7 +134,6 @@ async def taskdelete(ctx, task_id: int):
             return await ctx.send(f"🗑️ Task #{task_id} deleted.")
     await ctx.send("❌ Task not found.")
 
-# === Assign Task ===
 @bot.command()
 async def taskassign(ctx, task_id: int, user: discord.Member):
     for task in tasks:
@@ -112,7 +144,6 @@ async def taskassign(ctx, task_id: int, user: discord.Member):
             return
     await ctx.send("❌ Task not found.")
 
-# === Chart ===
 @bot.command()
 async def taskchart(ctx):
     done = sum(1 for t in tasks if t["done"])
@@ -126,7 +157,6 @@ async def taskchart(ctx):
     await ctx.send(file=discord.File(buf, "task_chart.png"))
     buf.close()
 
-# === Help Button Embed ===
 @bot.command()
 async def help(ctx):
     embed = discord.Embed(title="🛠️ Task Bot Help", description="Manage tasks easily.", color=0x00ffcc)
