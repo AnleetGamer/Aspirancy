@@ -1,147 +1,141 @@
-from keep_alive import keep_alive
-keep_alive()
-
 import discord
 from discord.ext import commands
 import json
 import os
-import matplotlib.pyplot as plt
 import io
-from keep_alive import keep_alive
+import matplotlib.pyplot as plt
+from flask import Flask
+from threading import Thread
+from dotenv import load_dotenv
+
+# === Keep Alive ===
+app = Flask(__name__)
+@app.route("/")
+def home():
+    return "✅ Bot is alive!"
+
+def run():
+    app.run(host="0.0.0.0", port=8080)
+
+def keep_alive():
+    Thread(target=run).start()
+
 keep_alive()
 
-# === Settings ===
-DISCORD_TOKEN = "YOUR_BOT_TOKEN_HERE"
-TASKS_FILE = "tasks.json"
+# === Load Token ===
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
 
-# === Load Tasks ===
-if os.path.exists(TASKS_FILE):
-    with open(TASKS_FILE, "r") as f:
-        tasks = json.load(f)
-else:
-    tasks = []
+# === Setup ===
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+TASKS_FILE = "tasks.json"
+tasks = json.load(open(TASKS_FILE)) if os.path.exists(TASKS_FILE) else []
 
 def save_tasks():
     with open(TASKS_FILE, "w") as f:
         json.dump(tasks, f, indent=2)
 
-# === Bot Setup ===
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-def create_task_embed(task):
+def create_embed(task):
     status = "✅ Done" if task["done"] else "⏳ Pending"
-    assigned = f"<@{task['assigned_to']}>" if task["assigned_to"] else "Unassigned"
-    embed = discord.Embed(title=f"📋 Task #{task['id']}", color=0x00ffcc)
-    embed.add_field(name="Name", value=task["name"], inline=False)
-    embed.add_field(name="Status", value=status, inline=True)
-    embed.add_field(name="Assigned To", value=assigned, inline=True)
-    embed.set_footer(text="Task Manager Bot")
+    embed = discord.Embed(title=f"📋 Task #{task['id']} - {task['name']}", color=0x00ffcc)
+    embed.add_field(name="📝 Description", value=task['description'], inline=False)
+    embed.add_field(name="🔘 Status", value=status, inline=True)
+    embed.add_field(name="👤 Assigned To", value=f"<@{task['assigned_to']}>" if task['assigned_to'] else "Unassigned", inline=True)
     return embed
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user.name}")
+    print(f"🤖 Logged in as {bot.user}")
 
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
+# === Create Task Command ===
+@bot.command()
+async def taskcreate(ctx, *, args=None):
+    if not args or "--desc" not in args:
+        return await ctx.send("❗ Usage: !taskcreate \"Title\" --desc \"short description\"")
+    title, desc = args.split("--desc", 1)
+    task = {
+        "id": len(tasks) + 1,
+        "name": title.strip().strip('"'),
+        "description": desc.strip().strip('"'),
+        "assigned_to": ctx.author.id,
+        "done": False
+    }
+    tasks.append(task)
+    save_tasks()
+    await ctx.send("📌 Task created:", embed=create_embed(task))
 
-    content = message.content.lower()
+# === List Tasks ===
+@bot.command()
+async def tasklist(ctx):
+    if not tasks:
+        return await ctx.send("📭 No tasks.")
+    for task in tasks:
+        await ctx.send(embed=create_embed(task))
 
-    if content.startswith("taskcreate"):
-        task_name = message.content[len("taskcreate"):].strip()
-        task = {
-            "id": len(tasks) + 1,
-            "name": task_name,
-            "assigned_to": message.author.id,
-            "done": False,
-            "creator": message.author.id
-        }
-        tasks.append(task)
-        save_tasks()
-        embed = create_task_embed(task)
-        await message.channel.send(f"📌 Task created and assigned to {message.author.mention}!", embed=embed)
-        try:
-            await message.author.send("📥 You created a new task:", embed=embed)
-        except:
-            pass
-
-    elif content.startswith("tasklist"):
-        if not tasks:
-            await message.channel.send("📭 No tasks available.")
+# === Mark Task Done ===
+@bot.command()
+async def taskdone(ctx, task_id: int):
+    for task in tasks:
+        if task["id"] == task_id:
+            if task["assigned_to"] != ctx.author.id:
+                return await ctx.send("🚫 Only assigned user can mark done.")
+            task["done"] = True
+            save_tasks()
+            await ctx.send(f"✅ Task #{task_id} marked done!", embed=create_embed(task))
             return
-        for task in tasks:
-            embed = create_task_embed(task)
-            await message.channel.send(embed=embed)
+    await ctx.send("❌ Task not found.")
 
-    elif content.startswith("taskassign"):
-        try:
-            parts = message.content.split()
-            task_id = int(parts[1])
-            user = message.mentions[0]
-        except:
-            await message.channel.send("⚠️ Usage: taskassign <task_id> @user")
+# === Delete Task ===
+@bot.command()
+async def taskdelete(ctx, task_id: int):
+    global tasks
+    for task in tasks:
+        if task["id"] == task_id:
+            if task["assigned_to"] != ctx.author.id:
+                return await ctx.send("🚫 You can't delete others' tasks.")
+            tasks = [t for t in tasks if t["id"] != task_id]
+            save_tasks()
+            return await ctx.send(f"🗑️ Task #{task_id} deleted.")
+    await ctx.send("❌ Task not found.")
+
+# === Assign Task ===
+@bot.command()
+async def taskassign(ctx, task_id: int, user: discord.Member):
+    for task in tasks:
+        if task["id"] == task_id:
+            task["assigned_to"] = user.id
+            save_tasks()
+            await ctx.send(f"👤 Task #{task_id} assigned to {user.mention}", embed=create_embed(task))
             return
+    await ctx.send("❌ Task not found.")
 
-        for task in tasks:
-            if task["id"] == task_id:
-                task["assigned_to"] = user.id
-                save_tasks()
-                embed = create_task_embed(task)
-                await message.channel.send(f"👤 Task #{task_id} assigned to {user.mention}", embed=embed)
-                try:
-                    await user.send("📥 A task was assigned to you:", embed=embed)
-                except:
-                    pass
-                return
-        await message.channel.send("❌ Task ID not found.")
+# === Chart ===
+@bot.command()
+async def taskchart(ctx):
+    done = sum(1 for t in tasks if t["done"])
+    pending = len(tasks) - done
+    plt.figure(figsize=(5, 5))
+    plt.pie([done, pending], labels=["Done", "Pending"], autopct="%1.1f%%", colors=["green", "orange"])
+    plt.title("📊 Task Completion")
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+    await ctx.send(file=discord.File(buf, "task_chart.png"))
+    buf.close()
 
-    elif content.startswith("taskdone"):
-        try:
-            task_id = int(message.content.split()[1])
-        except:
-            await message.channel.send("⚠️ Usage: taskdone <task_id>")
-            return
+# === Help Button Embed ===
+@bot.command()
+async def help(ctx):
+    embed = discord.Embed(title="🛠️ Task Bot Help", description="Manage tasks easily.", color=0x00ffcc)
+    embed.add_field(name="Create Task", value="!taskcreate \"Title\" --desc \"Description\"", inline=False)
+    embed.add_field(name="List Tasks", value="!tasklist", inline=False)
+    embed.add_field(name="Mark Done", value="!taskdone <task_id>", inline=False)
+    embed.add_field(name="Assign User", value="!taskassign <task_id> @user", inline=False)
+    embed.add_field(name="Delete Task", value="!taskdelete <task_id>", inline=False)
+    embed.add_field(name="Task Chart", value="!taskchart", inline=False)
+    await ctx.send(embed=embed)
 
-        for task in tasks:
-            if task["id"] == task_id:
-                if task["assigned_to"] != message.author.id and task["creator"] != message.author.id:
-                    await message.channel.send("🚫 You can't mark this task done.")
-                    return
-                task["done"] = True
-                save_tasks()
-                embed = create_task_embed(task)
-                await message.channel.send(f"✅ Task #{task_id} marked as done!", embed=embed)
-                try:
-                    await message.author.send("🎉 You marked a task as done:", embed=embed)
-                except:
-                    pass
-                return
-        await message.channel.send("❌ Task ID not found.")
-
-    elif content.startswith("taskchart"):
-        done = sum(1 for t in tasks if t["done"])
-        pending = len(tasks) - done
-
-        plt.figure(figsize=(5, 5))
-        plt.pie([done, pending], labels=["Done", "Pending"], autopct="%1.1f%%", colors=["green", "orange"])
-        plt.title("📊 Task Completion Chart")
-
-        buf = io.BytesIO()
-        plt.savefig(buf, format="png")
-        buf.seek(0)
-        await message.channel.send("Here is the task chart:", file=discord.File(buf, "task_chart.png"))
-        buf.close()
-
-    await bot.process_commands(message)
-
-from dotenv import load_dotenv
-import os
-
-load_dotenv()  # Works locally
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-
+bot.run(TOKEN)
